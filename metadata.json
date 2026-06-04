@@ -1,0 +1,6 @@
+{
+  "name": "Jira-like Issue Tracker",
+  "description": "A high-performance full-stack issue tracking and project management tool featuring Kanban boards, reporting, comments, status updates, and user roles.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
