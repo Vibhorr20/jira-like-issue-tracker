@@ -1,6 +1,6 @@
 import express from 'express';
+import http from 'http';
 import path from 'path';
-import { createServer as createViteServer } from 'vite';
 import {
   readDatabase,
   writeDatabase,
@@ -466,9 +466,15 @@ app.get('/api/dashboard', reqAuth, async (req, res) => {
 // ==========================================
 async function startServer() {
   if (!process.env.VERCEL) {
+    const httpServer = http.createServer(app);
+
     if (process.env.NODE_ENV !== 'production') {
+      const { createServer: createViteServer } = await import('vite');
       const vite = await createViteServer({
-        server: { middlewareMode: true },
+        server: {
+          middlewareMode: true,
+          hmr: { server: httpServer }
+        },
         appType: 'spa',
       });
       app.use(vite.middlewares);
@@ -480,8 +486,8 @@ async function startServer() {
       });
     }
 
-    app.listen(PORT, '0.0.0.0', () => {
-      console.log(`Server successfully started. Running active on: http://0.0.0.0:${PORT}`);
+    httpServer.listen(PORT, '0.0.0.0', () => {
+      console.log(`Server successfully started. Running active on: http://localhost:${PORT}`);
     });
   }
 }

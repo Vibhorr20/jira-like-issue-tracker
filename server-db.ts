@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'path';
 import pg from 'pg';
+import sql from 'mssql';
 import { User, Project, Issue, Comment, Attachment } from './src/types';
 
 const { Pool } = pg;
@@ -31,8 +32,74 @@ if (dbUrl) {
   });
 }
 
+// Setup MS-SQL connection pool if MSSQL_URL is available
+let mssqlPool: sql.ConnectionPool | null = null;
+const mssqlUrl = process.env.MSSQL_URL;
+
+async function getMSSQLPool(): Promise<sql.ConnectionPool | null> {
+  if (!mssqlUrl) return null;
+  if (mssqlPool) return mssqlPool;
+
+  try {
+    const connPool = new sql.ConnectionPool(mssqlUrl);
+    await connPool.connect();
+    
+    // Create table if it doesn't exist
+    await connPool.query(`
+      IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='jira_state' AND xtype='U')
+      CREATE TABLE jira_state (
+          id INT PRIMARY KEY,
+          data NVARCHAR(MAX) NOT NULL
+      )
+    `);
+    
+    mssqlPool = connPool;
+    console.log('Connected to MS-SQL Server and verified table schema.');
+    return mssqlPool;
+  } catch (error) {
+    console.error('Error establishing MS-SQL Server connection:', error);
+    mssqlPool = null;
+    return null;
+  }
+}
+
 // Read the database, initializing it if a file is missing or corrupted
 export async function readDatabase(): Promise<DatabaseSchema> {
+  const msql = await getMSSQLPool();
+  if (msql) {
+    try {
+      const res = await msql.query('SELECT data FROM jira_state WHERE id = 1');
+      if (res.recordset.length > 0) {
+        return JSON.parse(res.recordset[0].data) as DatabaseSchema;
+      }
+      
+      const initialDb: DatabaseSchema = {
+        users: [],
+        projects: [],
+        issues: [],
+        comments: [],
+        attachments: []
+      };
+      
+      const request = msql.request();
+      request.input('data', sql.NVarChar(sql.MAX), JSON.stringify(initialDb));
+      await request.query(`
+        IF NOT EXISTS (SELECT 1 FROM jira_state WHERE id = 1)
+        INSERT INTO jira_state (id, data) VALUES (1, @data)
+      `);
+      return initialDb;
+    } catch (error) {
+      console.error('Error reading database from MS-SQL Server:', error);
+      return {
+        users: [],
+        projects: [],
+        issues: [],
+        comments: [],
+        attachments: []
+      };
+    }
+  }
+
   if (pool) {
     try {
       // Create table if it doesn't exist
@@ -100,6 +167,24 @@ export async function readDatabase(): Promise<DatabaseSchema> {
 
 // Write the database atomically using a temporary file or database query
 export async function writeDatabase(data: DatabaseSchema): Promise<void> {
+  const msql = await getMSSQLPool();
+  if (msql) {
+    try {
+      const request = msql.request();
+      request.input('data', sql.NVarChar(sql.MAX), JSON.stringify(data));
+      await request.query(`
+        IF EXISTS (SELECT 1 FROM jira_state WHERE id = 1)
+            UPDATE jira_state SET data = @data WHERE id = 1
+        ELSE
+            INSERT INTO jira_state (id, data) VALUES (1, @data)
+      `);
+      return;
+    } catch (error) {
+      console.error('Error writing database to MS-SQL Server:', error);
+      return;
+    }
+  }
+
   if (pool) {
     try {
       await pool.query(
@@ -128,6 +213,7 @@ export async function writeDatabase(data: DatabaseSchema): Promise<void> {
     }
   }
 }
+
 
 // CRYPTO HELPER - pbkdf2 / scrypt password hashing
 export function hashPassword(password: string): string {
